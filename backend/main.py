@@ -135,21 +135,30 @@ def save_to_db(user, input_type, user_input, ai_response):
 # ROUTES
 # =========================
 
+from pydantic import BaseModel
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+
 @app.post("/register")
-def register(username: str, password: str, db: Session = Depends(get_db)):
-    if len(password) > 72:
-        password = password[:72]
+def register(user: UserCreate):
+    username = user.username
+    password = user.password
 
     existing = db.query(User).filter(User.username == username).first()
     if existing:
         raise HTTPException(status_code=400, detail="User already exists")
 
-    hashed = pwd_context.hash(password)
-    new_user = User(username=username, password=hashed)
+    new_user = User(
+        username=username,
+        password=hash_password(password)
+    )
+
     db.add(new_user)
     db.commit()
 
-    return {"message": "User created successfully"}
+    return {"message": "User registered successfully"}
 
 @app.post("/login")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
