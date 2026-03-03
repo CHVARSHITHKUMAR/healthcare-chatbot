@@ -137,14 +137,14 @@ def save_to_db(user, input_type, user_input, ai_response):
 
 from pydantic import BaseModel
 
-class UserCreate(BaseModel):
+class RegisterRequest(BaseModel):
     username: str
     password: str
 
 @app.post("/register")
-def register(user: UserCreate):
-    username = user.username
-    password = user.password
+def register(data: RegisterRequest):
+    username = data.username
+    password = data.password
 
     existing = db.query(User).filter(User.username == username).first()
     if existing:
@@ -160,16 +160,22 @@ def register(user: UserCreate):
 
     return {"message": "User registered successfully"}
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
 @app.post("/login")
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == form_data.username).first()
+def login(data: LoginRequest):
+    username = data.username
+    password = data.password
 
-    if not user or not pwd_context.verify(form_data.password[:72], user.password):
-        raise HTTPException(status_code=400, detail="Incorrect username or password")
+    user = db.query(User).filter(User.username == username).first()
+    if not user or not verify_password(password, user.password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token = create_access_token({"sub": user.username})
+    token = create_access_token({"sub": username})
 
-    return {"access_token": token, "token_type": "bearer"}
+    return {"access_token": token}
 
 @app.post("/chat")
 def chat(message: str, user: User = Depends(get_current_user)):
