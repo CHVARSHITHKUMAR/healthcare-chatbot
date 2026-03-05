@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship, Session
@@ -22,7 +22,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 DATABASE_URL = "sqlite:///./medical_history.db"
 
-# Put your Gemini API key here
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # =========================
@@ -50,6 +49,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+def home():
+    return {"status": "Healthcare AI API running"}
+
 # =========================
 # DATABASE
 # =========================
@@ -60,19 +63,23 @@ Base = declarative_base()
 
 class User(Base):
     __tablename__ = "users"
+
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
     password = Column(String)
+
     history = relationship("MedicalHistory", back_populates="owner")
 
 class MedicalHistory(Base):
     __tablename__ = "medical_history"
+
     id = Column(Integer, primary_key=True, index=True)
     input_type = Column(String)
     user_input = Column(String)
     ai_response = Column(String)
     severity_score = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
+
     user_id = Column(Integer, ForeignKey("users.id"))
     owner = relationship("User", back_populates="history")
 
@@ -84,6 +91,12 @@ Base.metadata.create_all(bind=engine)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+def hash_password(password: str):
+    return pwd_context.hash(password)
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
 
 def get_db():
     db = SessionLocal()
@@ -99,16 +112,24 @@ def create_access_token(data: dict):
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    credentials_exception = HTTPException(status_code=401, detail="Invalid credentials")
+
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="Invalid credentials"
+    )
+
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username = payload.get("sub")
+
         if username is None:
             raise credentials_exception
+
     except JWTError:
         raise credentials_exception
 
     user = db.query(User).filter(User.username == username).first()
+
     if user is None:
         raise credentials_exception
 
@@ -119,7 +140,9 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 # =========================
 
 def save_to_db(user, input_type, user_input, ai_response):
+
     db = SessionLocal()
+
     record = MedicalHistory(
         input_type=input_type,
         user_input=user_input,
@@ -127,12 +150,13 @@ def save_to_db(user, input_type, user_input, ai_response):
         severity_score=0,
         user_id=user.id
     )
+
     db.add(record)
     db.commit()
     db.close()
 
 # =========================
-# ROUTES
+# REQUEST MODELS
 # =========================
 
 from pydantic import BaseModel
@@ -141,18 +165,25 @@ class RegisterRequest(BaseModel):
     username: str
     password: str
 
-@app.post("/register")
-def register(data: RegisterRequest):
-    username = data.username
-    password = data.password
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
-    existing = db.query(User).filter(User.username == username).first()
+# =========================
+# ROUTES
+# =========================
+
+@app.post("/register")
+def register(data: RegisterRequest, db: Session = Depends(get_db)):
+
+    existing = db.query(User).filter(User.username == data.username).first()
+
     if existing:
         raise HTTPException(status_code=400, detail="User already exists")
 
     new_user = User(
-        username=username,
-        password=hash_password(password)
+        username=data.username,
+        password=hash_password(data.password)
     )
 
     db.add(new_user)
@@ -160,31 +191,30 @@ def register(data: RegisterRequest):
 
     return {"message": "User registered successfully"}
 
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
 @app.post("/login")
-def login(data: LoginRequest):
-    username = data.username
-    password = data.password
+def login(data: LoginRequest, db: Session = Depends(get_db)):
 
-    user = db.query(User).filter(User.username == username).first()
-    if not user or not verify_password(password, user.password):
+    user = db.query(User).filter(User.username == data.username).first()
+
+    if not user or not verify_password(data.password, user.password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token = create_access_token({"sub": username})
+    token = create_access_token({"sub": data.username})
 
     return {"access_token": token}
 
 @app.post("/chat")
 def chat(message: str, user: User = Depends(get_current_user)):
+
     ai_response = ask_gemini(message)
+
     save_to_db(user, "text", message, ai_response)
+
     return {"reply": ai_response}
 
 @app.post("/analyze-image")
 def analyze_image(file: UploadFile = File(...), user: User = Depends(get_current_user)):
+
     try:
         contents = file.file.read()
         image = Image.open(io.BytesIO(contents))
@@ -205,11 +235,13 @@ def analyze_image(file: UploadFile = File(...), user: User = Depends(get_current
 
 @app.post("/analyze-pdf")
 def analyze_pdf(file: UploadFile = File(...), user: User = Depends(get_current_user)):
+
     try:
         contents = file.file.read()
         pdf_reader = PyPDF2.PdfReader(io.BytesIO(contents))
 
         text = ""
+
         for page in pdf_reader.pages:
             text += page.extract_text() or ""
 
@@ -229,7 +261,10 @@ def analyze_pdf(file: UploadFile = File(...), user: User = Depends(get_current_u
 
 @app.get("/history")
 def get_history(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    history = db.query(MedicalHistory).filter(MedicalHistory.user_id == user.id).all()
+
+    history = db.query(MedicalHistory).filter(
+        MedicalHistory.user_id == user.id
+    ).all()
 
     return [
         {
